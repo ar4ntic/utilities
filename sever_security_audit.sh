@@ -73,7 +73,15 @@ exec > >(tee -a "$LOGFILE") 2>&1
 display_info "Starting security audit for $TARGET. Results will be saved in $OUTDIR."
 
 # Default Gobuster wordlist and validation
-DEFAULT_WORDLIST="/usr/share/wordlists/dirb/common.txt"
+DEFAULT_WORDLIST="$HOME/SecLists/Discovery/Web-Content/common.txt"
+if [ ! -f "$DEFAULT_WORDLIST" ]; then
+  display_info "Gobuster wordlist not found. Cloning SecLists repository..."
+  if ! git clone https://github.com/danielmiessler/SecLists.git "$HOME/SecLists"; then
+    display_error "Failed to clone SecLists repository. Please check your network connection and try again."
+    exit 1
+  fi
+fi
+
 if [ -f "$DEFAULT_WORDLIST" ]; then
   WORDLIST="$DEFAULT_WORDLIST"
 else
