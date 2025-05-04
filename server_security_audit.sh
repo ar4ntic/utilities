@@ -1,9 +1,52 @@
 #!/usr/bin/env bash
 # vm_security_audit.sh - GUI-based Automated security audit for a public-exposed VM
-# Uses Whiptail for GUI dialogs.
+# Uses Whiptail for GUI dialogs with fallback to text mode
 
 # Required dependencies
 DEPENDENCIES=("nmap" "nikto" "sslscan" "gobuster" "curl" "dig" "openssl" "git")
+
+# Function to handle script termination
+cleanup_and_exit() {
+  local exit_code=$1
+  local message=$2
+  
+  # Kill any running background processes
+  if [ -n "$PID_LIST" ]; then
+    echo "Terminating active processes..."
+    for pid in $PID_LIST; do
+      if ps -p $pid > /dev/null; then
+        kill -9 $pid 2>/dev/null
+      fi
+    done
+  fi
+  
+  # Create a clean exit message if the script was interrupted
+  if [ "$exit_code" -ne 0 ] && [ -n "$OUTDIR" ] && [ -n "$LOGFILE" ]; then
+    echo -e "\n[$(date)] Script was terminated by user or encountered an error" >> "$LOGFILE"
+    
+    if [ -n "$message" ]; then
+      echo -e "\n[$(date)] $message" >> "$LOGFILE"
+      echo -e "\n$message"
+    fi
+    
+    echo -e "\nScript terminated. Partial results saved in: $OUTDIR"
+  fi
+  
+  exit $exit_code
+}
+
+# Set trap for Ctrl+C and other termination signals
+trap 'cleanup_and_exit 1 "Script cancelled by user (Ctrl+C)"' SIGINT SIGTERM
+
+# Variable to track GUI/Text mode
+USE_GUI=true
+PID_LIST=""
+
+# Function to display cancellation message and instructions
+display_cancel_info() {
+  echo -e "\n[INFO] To cancel the audit at any time, press Ctrl+C"
+  echo -e "[INFO] The script will clean up and save any partial results\n"
+}
 
 # Function to check and install dependencies
 check_dependencies() {
@@ -79,6 +122,55 @@ if ! command -v whiptail &> /dev/null; then
   fi
 fi
 
+# Function to display messages or prompts
+prompt_user() {
+  local message="$1"
+  local default="$2"
+  whiptail --inputbox "$message" 10 60 "$default" 3>&1 1>&2 2>&3
+}
+
+# Function to display errors
+display_error() {
+  local message="$1"
+  if $USE_GUI; then
+    whiptail --msgbox "ERROR: $message" 10 60
+  else
+    echo -e "\n[ERROR] $message"
+  fi
+}
+
+# Function to display information
+display_info() {
+  local message="$1"
+  if $USE_GUI; then
+    whiptail --msgbox "$message" 10 60
+  else
+    echo -e "\n[INFO] $message"
+  fi
+}
+
+# Function to update progress with fallback to text mode
+update_progress() {
+  local percent="$1"
+  local message="$2"
+  
+  if $USE_GUI; then
+    # Try to update progress with whiptail
+    if ! whiptail --title "Security Audit" --gauge "$message" 10 70 "$percent" 2>/dev/null; then
+      # If whiptail fails, switch to text mode
+      echo "Switching to text progress mode due to whiptail issue"
+      USE_GUI=false
+      echo -e "\n[$percent%] $message"
+    fi
+  else
+    # Text mode progress
+    echo -e "\n[$percent%] $message"
+  fi
+  
+  # Always log the progress to the log file
+  echo "[$(date)] [$percent%] $message" >> "$LOGFILE"
+}
+
 # Check for required dependencies
 check_dependencies || exit 1
 
@@ -95,24 +187,8 @@ while true; do
   kill -0 "$$" || exit
 done 2>/dev/null &
 
-# Function to display messages or prompts
-prompt_user() {
-  local message="$1"
-  local default="$2"
-  whiptail --inputbox "$message" 10 60 "$default" 3>&1 1>&2 2>&3
-}
-
-# Function to display errors
-display_error() {
-  local message="$1"
-  whiptail --msgbox "ERROR: $message" 10 60
-}
-
-# Function to display information
-display_info() {
-  local message="$1"
-  whiptail --msgbox "$message" 10 60
-}
+# Display cancellation instructions early
+display_cancel_info
 
 # Prompt for target URL/IP
 TARGET_RAW=$(prompt_user "Enter the target URL or IP address:" "")
@@ -178,7 +254,7 @@ exec > >(tee -a "$LOGFILE") 2>&1 || {
 }
 
 # Display information about the audit
-display_info "Starting security audit for $TARGET. Results will be saved in $OUTDIR."
+display_info "Starting security audit for $TARGET. Results will be saved in $OUTDIR.\n\nYou can cancel the scan at any time by pressing Ctrl+C."
 
 # Default Gobuster wordlist and validation
 DEFAULT_WORDLIST="$HOME/SecLists/Discovery/Web-Content/common.txt"
@@ -228,13 +304,37 @@ run_with_timeout() {
   echo "$msg" | tee -a "$log_file"
   
   # Run the command with timeout
-  timeout "$timeout_sec" bash -c "$cmd" 2>&1 | tee -a "$log_file"
+  timeout "$timeout_sec" bash -c "$cmd" 2>&1 | tee -a "$log_file" &
+  local cmd_pid=$!
+  PID_LIST="$PID_LIST $cmd_pid"
   
-  local exit_code=${PIPESTATUS[0]}
-  if [ $exit_code -eq 124 ]; then
-    echo "Command timed out after $timeout_sec seconds: $cmd" | tee -a "$log_file"
-    return 124
-  elif [ $exit_code -ne 0 ]; then
+  # Wait for command with progress indicator
+  local elapsed=0
+  while kill -0 $cmd_pid 2>/dev/null; do
+    sleep 1
+    ((elapsed++))
+    
+    if [ $elapsed -ge "$timeout_sec" ]; then
+      echo "Command timed out after $timeout_sec seconds: $cmd" | tee -a "$log_file"
+      kill -9 $cmd_pid 2>/dev/null
+      wait $cmd_pid 2>/dev/null
+      return 124
+    fi
+    
+    # Show progress indicator every 5 seconds
+    if ((elapsed % 5 == 0)); then
+      echo -n "." 
+      if ((elapsed % 60 == 0)); then
+        echo " $elapsed seconds elapsed"
+      fi
+    fi
+  done
+  
+  # Get the exit code
+  wait $cmd_pid
+  local exit_code=$?
+  
+  if [ $exit_code -ne 0 ] && [ $exit_code -ne 124 ]; then
     echo "Command failed with exit code $exit_code: $cmd" | tee -a "$log_file"
     return $exit_code
   fi
@@ -245,52 +345,61 @@ run_with_timeout() {
 run_tasks() {
   local total=${#TASKS[@]}
   
-  # Simple echo to check progress
-  echo "Starting security audit process..." | tee -a "$LOGFILE"
+  # Clear console and display header
+  clear
+  echo "=== Starting Security Audit for $TARGET ==="
+  echo "Results will be saved to: $OUTDIR"
+  echo "----------------------------------------"
   
-  # Initialize the progress bar with a simple command that doesn't use pipe
-  whiptail --title "Security Audit" --gauge "Initializing..." 10 70 0
+  # Initialize with text message
+  update_progress 0 "Initializing security audit..."
+  sleep 1
   
-  # Use a safer way to update the progress bar
   for i in "${!TASKS[@]}"; do
     local task_message="${TASKS[i]}"
     local progress=$(( (i * 100) / total ))
     
-    # Update progress without using pipe
-    echo $progress > /tmp/progress_bar_pipe
-    whiptail --title "Security Audit" --gauge "Task $((i+1))/$total: ${TASKS[i]}" 10 70 "$(cat /tmp/progress_bar_pipe)"
+    # Update progress with current task
+    update_progress "$progress" "Task $((i+1))/$total: ${task_message}"
     
-    echo "[$(date)] Starting: $task_message" | tee -a "$LOGFILE"
+    # Echo task start to terminal
+    echo "$(date): Starting: $task_message"
     
     # Check if required tool is available before running a task
+    local skip_task=false
     case $i in
       0|1|2)
         if ! command -v nmap &> /dev/null; then
           echo "ERROR: nmap not installed. Skipping task." | tee -a "$LOGFILE"
-          continue
+          skip_task=true
         fi
         ;;
       3)
         if ! command -v nikto &> /dev/null; then
           echo "ERROR: nikto not installed. Skipping task." | tee -a "$LOGFILE"
-          continue
+          skip_task=true
         fi
         ;;
       4)
         if ! command -v sslscan &> /dev/null; then
           echo "ERROR: sslscan not installed. Skipping task." | tee -a "$LOGFILE"
-          continue
+          skip_task=true
         fi
         ;;
       6)
         if ! command -v gobuster &> /dev/null; then
           echo "ERROR: gobuster not installed. Skipping task." | tee -a "$LOGFILE"
-          continue
+          skip_task=true
         fi
         ;;
     esac
     
-    # Rest of the case statement with timeouts
+    if $skip_task; then
+      echo "Skipping task due to missing dependencies." | tee -a "$LOGFILE"
+      continue
+    fi
+    
+    # Run the task
     case $i in
       0)
         run_with_timeout "sudo nmap -sS -Pn -p- '$TARGET' -oN '$OUTDIR/nmap_full.txt'" 600 "$LOGFILE" "Running full TCP port scan with Nmap..."
@@ -354,26 +463,20 @@ run_tasks() {
         ;;
     esac
     
-    # Force progress bar update
-    {
-      echo $((progress + 5))
-      echo "XXX"
-      echo "Completed: ${TASKS[i]}"
-      echo "XXX"
-    } | whiptail --gauge "Running Security Audit..." 10 70 0
-    sleep 1
+    # Update progress after task completion
+    update_progress "$((progress + 5))" "Completed: ${TASKS[i]}"
     
-    echo "[$(date)] Completed: $task_message" | tee -a "$LOGFILE"
+    echo "$(date): Completed: $task_message" | tee -a "$LOGFILE"
+    sleep 1
   done
   
-  # Show completion in progress bar with a delay to ensure visibility
-  {
-    echo 100
-    echo "XXX"
-    echo "Audit complete!"
-    echo "XXX"
-  } | whiptail --gauge "Running Security Audit..." 10 70 0
-  sleep 3
+  # Final update
+  update_progress 100 "Audit complete!"
+  sleep 2
+  
+  # Final text message
+  echo "Security audit completed successfully!" | tee -a "$LOGFILE"
+  echo "Summary will be displayed shortly..." | tee -a "$LOGFILE"
 }
 
 # Improved summary generation with better error handling
@@ -432,14 +535,22 @@ generate_summary() {
   } >> "$SUMMARY"
 }
 
-# Replace the direct summary generation with the function call
-run_tasks
-generate_summary
+# Wrap the main execution in an error handler
+{
+  run_tasks
+  generate_summary
+  
+  # Display summary
+  if [ -f "$SUMMARY" ]; then
+    whiptail --textbox "$SUMMARY" 20 70 || cat "$SUMMARY"
+  fi
 
-# Display summary
-whiptail --textbox "$SUMMARY" 20 70
-
-# Display the full path of the results
-RESULTS_DIR_FULL_PATH="$(realpath "$OUTDIR")"
-SUMMARY_FILE_FULL_PATH="$(realpath "$SUMMARY")"
-display_info "Audit completed. Results saved in:\nDirectory: $RESULTS_DIR_FULL_PATH\nSummary File: $SUMMARY_FILE_FULL_PATH"
+  # Display the full path of the results
+  RESULTS_DIR_FULL_PATH="$(realpath "$OUTDIR")"
+  SUMMARY_FILE_FULL_PATH="$(realpath "$SUMMARY")"
+  display_info "Audit completed. Results saved in:\nDirectory: $RESULTS_DIR_FULL_PATH\nSummary File: $SUMMARY_FILE_FULL_PATH"
+} || {
+  # This block runs if there's an error in the main execution
+  error_code=$?
+  cleanup_and_exit $error_code "Script encountered an error (code $error_code)"
+}
