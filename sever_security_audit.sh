@@ -2,6 +2,62 @@
 # vm_security_audit.sh - GUI-based Automated security audit for a public-exposed VM
 # Uses Whiptail for GUI dialogs.
 
+# Required dependencies
+DEPENDENCIES=("nmap" "nikto" "sslscan" "gobuster" "curl" "dig" "openssl" "git")
+
+# Function to check and install dependencies
+check_dependencies() {
+  local missing_deps=()
+  
+  for dep in "${DEPENDENCIES[@]}"; do
+    if ! command -v "$dep" &> /dev/null; then
+      missing_deps+=("$dep")
+    fi
+  done
+  
+  if [ ${#missing_deps[@]} -eq 0 ]; then
+    return 0
+  fi
+  
+  whiptail --yesno "The following dependencies are missing and required for this script:\n$(printf '  - %s\n' "${missing_deps[@]}")\n\nWould you like to install them now?" 20 70
+  
+  if [ $? -eq 0 ]; then
+    echo "Attempting to install missing dependencies..."
+    
+    if command -v apt &> /dev/null; then
+      sudo apt update && sudo apt install -y "${missing_deps[@]}"
+    elif command -v yum &> /dev/null; then
+      sudo yum install -y "${missing_deps[@]}"
+    elif command -v dnf &> /dev/null; then
+      sudo dnf install -y "${missing_deps[@]}"
+    else
+      display_error "Unsupported package manager. Please install the missing dependencies manually and re-run the script."
+      echo "Missing dependencies: ${missing_deps[*]}"
+      return 1
+    fi
+    
+    # Verify installations
+    local still_missing=()
+    for dep in "${missing_deps[@]}"; do
+      if ! command -v "$dep" &> /dev/null; then
+        still_missing+=("$dep")
+      fi
+    done
+    
+    if [ ${#still_missing[@]} -gt 0 ]; then
+      display_error "Failed to install all required dependencies. Please install them manually and re-run the script."
+      echo "Still missing: ${still_missing[*]}"
+      return 1
+    fi
+    
+    display_info "All required dependencies have been successfully installed."
+    return 0
+  else
+    display_error "This script requires all dependencies to run properly. Exiting..."
+    return 1
+  fi
+}
+
 # Check if Whiptail is installed and install it if necessary (CLI only)
 if ! command -v whiptail &> /dev/null; then
   echo "Whiptail is not installed. Attempting to install it..."
@@ -22,6 +78,9 @@ if ! command -v whiptail &> /dev/null; then
     exit 1
   fi
 fi
+
+# Check for required dependencies
+check_dependencies || exit 1
 
 # Ensure the script has sudo privileges
 if ! sudo -v; then
@@ -159,9 +218,35 @@ declare -a TASKS=(
   "Generating recommendations..."
 )
 
+# Function to run a command with timeout
+run_with_timeout() {
+  local cmd="$1"
+  local timeout_sec="${2:-300}"  # Default 5 minutes timeout
+  local log_file="$3"
+  local msg="$4"
+  
+  echo "$msg" | tee -a "$log_file"
+  
+  # Run the command with timeout
+  timeout "$timeout_sec" bash -c "$cmd" 2>&1 | tee -a "$log_file"
+  
+  local exit_code=${PIPESTATUS[0]}
+  if [ $exit_code -eq 124 ]; then
+    echo "Command timed out after $timeout_sec seconds: $cmd" | tee -a "$log_file"
+    return 124
+  elif [ $exit_code -ne 0 ]; then
+    echo "Command failed with exit code $exit_code: $cmd" | tee -a "$log_file"
+    return $exit_code
+  fi
+  return 0
+}
+
 # Function to run scans with properly working progress bar
 run_tasks() {
   local total=${#TASKS[@]}
+  
+  # Initial progress bar setup
+  whiptail --title "Security Audit" --gauge "Initializing security audit..." 10 70 0
   
   for i in "${!TASKS[@]}"; do
     local task_message="${TASKS[i]}"
@@ -177,35 +262,63 @@ run_tasks() {
     
     echo "[$(date)] Starting: $task_message" | tee -a "$LOGFILE"
     
+    # Check if required tool is available before running a task
+    case $i in
+      0|1|2)
+        if ! command -v nmap &> /dev/null; then
+          echo "ERROR: nmap not installed. Skipping task." | tee -a "$LOGFILE"
+          continue
+        fi
+        ;;
+      3)
+        if ! command -v nikto &> /dev/null; then
+          echo "ERROR: nikto not installed. Skipping task." | tee -a "$LOGFILE"
+          continue
+        fi
+        ;;
+      4)
+        if ! command -v sslscan &> /dev/null; then
+          echo "ERROR: sslscan not installed. Skipping task." | tee -a "$LOGFILE"
+          continue
+        fi
+        ;;
+      6)
+        if ! command -v gobuster &> /dev/null; then
+          echo "ERROR: gobuster not installed. Skipping task." | tee -a "$LOGFILE"
+          continue
+        fi
+        ;;
+    esac
+    
+    # Rest of the case statement with timeouts
     case $i in
       0)
-        echo "Running full TCP port scan with Nmap..." | tee -a "$LOGFILE"
-        sudo nmap -sS -Pn -p- "$TARGET" -oN "$OUTDIR/nmap_full.txt" 2>&1 | tee -a "$LOGFILE"
+        run_with_timeout "sudo nmap -sS -Pn -p- '$TARGET' -oN '$OUTDIR/nmap_full.txt'" 600 "$LOGFILE" "Running full TCP port scan with Nmap..."
         OPEN_TCP=$(grep -c "open" "$OUTDIR/nmap_full.txt" 2>/dev/null || echo "0")
         ;;
       1)
-        echo "Running service/version scan with Nmap..." | tee -a "$LOGFILE"
-        sudo nmap -sV -sC -p 22,80,443 "$TARGET" -oN "$OUTDIR/nmap_sv.txt" 2>&1 | tee -a "$LOGFILE"
+        run_with_timeout "sudo nmap -sV -sC -p 22,80,443 '$TARGET' -oN '$OUTDIR/nmap_sv.txt'" 300 "$LOGFILE" "Running service/version scan with Nmap..."
         ;;
       2)
-        echo "Running UDP port scan with Nmap..." | tee -a "$LOGFILE"
-        sudo nmap -sU -Pn --top-ports 100 "$TARGET" -oN "$OUTDIR/nmap_udp.txt" 2>&1 | tee -a "$LOGFILE"
+        run_with_timeout "sudo nmap -sU -Pn --top-ports 100 '$TARGET' -oN '$OUTDIR/nmap_udp.txt'" 300 "$LOGFILE" "Running UDP port scan with Nmap..."
         OPEN_UDP=$(grep -c "open" "$OUTDIR/nmap_udp.txt" 2>/dev/null || echo "0")
         ;;
       3)
-        echo "Running web vulnerabilities scan with Nikto..." | tee -a "$LOGFILE"
-        nikto -h "https://$TARGET" -o "$OUTDIR/nikto.txt" 2>&1 | tee -a "$LOGFILE"
+        run_with_timeout "nikto -h 'https://$TARGET' -o '$OUTDIR/nikto.txt'" 600 "$LOGFILE" "Running web vulnerabilities scan with Nikto..."
         ;;
       4)
-        echo "Running SSL/TLS configuration scan with SSLScan..." | tee -a "$LOGFILE"
-        sslscan "$TARGET" > "$OUTDIR/sslscan.txt" 2>&1
+        run_with_timeout "sslscan '$TARGET' > '$OUTDIR/sslscan.txt'" 300 "$LOGFILE" "Running SSL/TLS configuration scan with SSLScan..."
         if grep -q "SSLv3" "$OUTDIR/sslscan.txt" 2>/dev/null; then
           echo "- WARNING: SSLv3 is supported. Disable it to prevent vulnerabilities like POODLE." | tee -a "$SUMMARY" "$LOGFILE"
         fi
         ;;
       5)
-        echo "Checking security headers with curl..." | tee -a "$LOGFILE"
-        curl -s -D "$OUTDIR/headers.txt" -o /dev/null "https://$TARGET" 2>&1 | tee -a "$LOGFILE"
+        run_with_timeout "curl -s -m 30 -D '$OUTDIR/headers.txt' -o /dev/null 'https://$TARGET'" 60 "$LOGFILE" "Checking security headers with curl..."
+        # If https fails, try http
+        if [ ! -s "$OUTDIR/headers.txt" ]; then
+          run_with_timeout "curl -s -m 30 -D '$OUTDIR/headers.txt' -o /dev/null 'http://$TARGET'" 60 "$LOGFILE" "HTTPS failed, trying HTTP instead..."
+        fi
+        
         for hdr in Strict-Transport-Security Content-Security-Policy X-Frame-Options X-Content-Type-Options; do
           if ! grep -q "$hdr" "$OUTDIR/headers.txt" 2>/dev/null; then
             echo "- Missing header: $hdr" | tee -a "$SUMMARY" "$LOGFILE"
@@ -213,14 +326,16 @@ run_tasks() {
         done
         ;;
       6)
-        echo "Running directory brute-force with Gobuster..." | tee -a "$LOGFILE"
-        gobuster dir -u "https://$TARGET" -w "$WORDLIST" -o "$OUTDIR/gobuster.txt" 2>&1 | tee -a "$LOGFILE"
+        run_with_timeout "gobuster dir -u 'https://$TARGET' -w '$WORDLIST' -o '$OUTDIR/gobuster.txt'" 600 "$LOGFILE" "Running directory brute-force with Gobuster..."
+        # If https fails, try http
+        if [ ! -s "$OUTDIR/gobuster.txt" ]; then
+          run_with_timeout "gobuster dir -u 'http://$TARGET' -w '$WORDLIST' -o '$OUTDIR/gobuster.txt'" 600 "$LOGFILE" "HTTPS failed, trying HTTP for Gobuster..."
+        fi
         ;;
       7)
-        echo "Running DNS enumeration with dig..." | tee -a "$LOGFILE"
-        dig +noall +answer "$TARGET" > "$OUTDIR/dns_a.txt" 2>&1
-        dig CAA +noall +answer "$TARGET" >> "$OUTDIR/dns_a.txt" 2>&1
-        dig TXT +noall +answer "$TARGET" >> "$OUTDIR/dns_a.txt" 2>&1
+        run_with_timeout "dig +noall +answer '$TARGET' > '$OUTDIR/dns_a.txt' 2>&1" 60 "$LOGFILE" "Running DNS enumeration with dig..."
+        run_with_timeout "dig CAA +noall +answer '$TARGET' >> '$OUTDIR/dns_a.txt' 2>&1" 60 "$LOGFILE" "Running CAA DNS lookup..."
+        run_with_timeout "dig TXT +noall +answer '$TARGET' >> '$OUTDIR/dns_a.txt' 2>&1" 60 "$LOGFILE" "Running TXT DNS lookup..."
         if dig +short TXT "$TARGET" 2>/dev/null | grep -q "v=spf1"; then
           echo "- SPF record found." | tee -a "$SUMMARY" "$LOGFILE" 
         else
@@ -228,11 +343,10 @@ run_tasks() {
         fi
         ;;
       8)
-        echo "Extracting certificate details with OpenSSL..." | tee -a "$LOGFILE"
-        if echo | openssl s_client -connect "$TARGET:443" -servername "$TARGET" 2>/dev/null | openssl x509 -noout -dates -issuer -subject > "$OUTDIR/cert.txt"; then
-          echo "Certificate details extracted successfully." | tee -a "$LOGFILE"
-        else
-          echo "OpenSSL certificate details extraction failed." | tee -a "$LOGFILE"
+        run_with_timeout "echo | openssl s_client -connect '$TARGET:443' -servername '$TARGET' 2>/dev/null | openssl x509 -noout -dates -issuer -subject > '$OUTDIR/cert.txt'" 60 "$LOGFILE" "Extracting certificate details with OpenSSL..."
+        # Try alternative port 8443 if 443 fails
+        if [ ! -s "$OUTDIR/cert.txt" ]; then
+          run_with_timeout "echo | openssl s_client -connect '$TARGET:8443' -servername '$TARGET' 2>/dev/null | openssl x509 -noout -dates -issuer -subject > '$OUTDIR/cert.txt'" 60 "$LOGFILE" "Trying alternative port 8443 for certificate..."
         fi
         ;;
       9)
@@ -240,67 +354,87 @@ run_tasks() {
         ;;
     esac
     
+    # Force progress bar update
+    {
+      echo $((progress + 5))
+      echo "XXX"
+      echo "Completed: ${TASKS[i]}"
+      echo "XXX"
+    } | whiptail --gauge "Running Security Audit..." 10 70 0
+    sleep 1
+    
     echo "[$(date)] Completed: $task_message" | tee -a "$LOGFILE"
   done
   
-  # Show completion in progress bar
+  # Show completion in progress bar with a delay to ensure visibility
   {
     echo 100
     echo "XXX"
-    echo "Audit complete"
+    echo "Audit complete!"
     echo "XXX"
   } | whiptail --gauge "Running Security Audit..." 10 70 0
-  sleep 2
+  sleep 3
 }
 
-# Just call the function directly
-run_tasks
-
-# Improved error checking for summary generation
-{
-  echo "Security Audit Summary for $TARGET"
-  echo "Generated: $(date)"
-  echo
-  echo "Open TCP ports: ${OPEN_TCP:-0}"
-  if [ "${OPEN_TCP:-0}" -gt 3 ]; then
-    echo "- WARNING: Consider closing unnecessary TCP ports."
-  else
-    echo "- TCP port count is within expected range."
-  fi
-  
-  if [ -f "$OUTDIR/nmap_full.txt" ]; then
-    grep -q "22/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- SSH (port 22) open: disable root login & enforce key-based auth."
-    grep -q "80/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- HTTP (port 80) open: redirect to HTTPS & enforce HSTS."
-    grep -q "443/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- HTTPS (port 443) open: review weak ciphers in sslscan output."
-  else
-    echo "- Warning: Nmap scan results not available."
-  fi
-  
-  echo
-  if [ -f "$OUTDIR/gobuster.txt" ]; then
-    gob_count=$(grep -c "Status: 200" "$OUTDIR/gobuster.txt" || echo "0")
-    if [ "$gob_count" -gt 0 ]; then
-      echo "- Found $gob_count accessible dirs/files via Gobuster."
+# Improved summary generation with better error handling
+generate_summary() {
+  {
+    echo "Security Audit Summary for $TARGET"
+    echo "Generated: $(date)"
+    echo
+    echo "TOOLS AVAILABILITY:"
+    command -v nmap &> /dev/null && echo "- Nmap: Available" || echo "- Nmap: NOT AVAILABLE (port scanning incomplete)"
+    command -v nikto &> /dev/null && echo "- Nikto: Available" || echo "- Nikto: NOT AVAILABLE (web vulnerability scanning incomplete)"
+    command -v sslscan &> /dev/null && echo "- SSLScan: Available" || echo "- SSLScan: NOT AVAILABLE (TLS security testing incomplete)"
+    command -v gobuster &> /dev/null && echo "- Gobuster: Available" || echo "- Gobuster: NOT AVAILABLE (directory discovery incomplete)"
+    echo
+    
+    echo "SCAN RESULTS:"
+    echo "Open TCP ports: ${OPEN_TCP:-0}"
+    if [ "${OPEN_TCP:-0}" -gt 3 ]; then
+      echo "- WARNING: Consider closing unnecessary TCP ports."
     else
-      echo "- No common hidden dirs/files found."
+      echo "- TCP port count is within expected range."
     fi
-  else
-    echo "- Warning: Gobuster results not available."
-  fi
-  
-  if [ -f "$OUTDIR/cert.txt" ]; then
-    EXPIRY=$(grep -Po "notAfter=\K.*" "$OUTDIR/cert.txt" || echo "Not available")
-    echo "- Certificate expiration date: $EXPIRY"
-  else
-    echo "- Certificate information not available."
-  fi
-  
-  if [ -f "$OUTDIR/dns_a.txt" ]; then
-    grep -q "issue" "$OUTDIR/dns_a.txt" && echo "- CAA record present." || echo "- No CAA record found."
-  else
-    echo "- DNS information not available."
-  fi
-} >> "$SUMMARY"
+    
+    if [ -f "$OUTDIR/nmap_full.txt" ]; then
+      grep -q "22/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- SSH (port 22) open: disable root login & enforce key-based auth."
+      grep -q "80/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- HTTP (port 80) open: redirect to HTTPS & enforce HSTS."
+      grep -q "443/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- HTTPS (port 443) open: review weak ciphers in sslscan output."
+    else
+      echo "- Warning: Nmap scan results not available."
+    fi
+    
+    echo
+    if [ -f "$OUTDIR/gobuster.txt" ]; then
+      gob_count=$(grep -c "Status: 200" "$OUTDIR/gobuster.txt" || echo "0")
+      if [ "$gob_count" -gt 0 ]; then
+        echo "- Found $gob_count accessible dirs/files via Gobuster."
+      else
+        echo "- No common hidden dirs/files found."
+      fi
+    else
+      echo "- Warning: Gobuster results not available."
+    fi
+    
+    if [ -f "$OUTDIR/cert.txt" ]; then
+      EXPIRY=$(grep -Po "notAfter=\K.*" "$OUTDIR/cert.txt" || echo "Not available")
+      echo "- Certificate expiration date: $EXPIRY"
+    else
+      echo "- Certificate information not available."
+    fi
+    
+    if [ -f "$OUTDIR/dns_a.txt" ]; then
+      grep -q "issue" "$OUTDIR/dns_a.txt" && echo "- CAA record present." || echo "- No CAA record found."
+    else
+      echo "- DNS information not available."
+    fi
+  } >> "$SUMMARY"
+}
+
+# Replace the direct summary generation with the function call
+run_tasks
+generate_summary
 
 # Display summary
 whiptail --textbox "$SUMMARY" 20 70
