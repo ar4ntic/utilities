@@ -245,20 +245,20 @@ run_with_timeout() {
 run_tasks() {
   local total=${#TASKS[@]}
   
-  # Initial progress bar setup
-  whiptail --title "Security Audit" --gauge "Initializing security audit..." 10 70 0
+  # Simple echo to check progress
+  echo "Starting security audit process..." | tee -a "$LOGFILE"
   
+  # Initialize the progress bar with a simple command that doesn't use pipe
+  whiptail --title "Security Audit" --gauge "Initializing..." 10 70 0
+  
+  # Use a safer way to update the progress bar
   for i in "${!TASKS[@]}"; do
     local task_message="${TASKS[i]}"
     local progress=$(( (i * 100) / total ))
     
-    # Update the progress bar with current task information
-    {
-      echo $progress
-      echo "XXX"
-      echo "Task $((i+1))/$total: ${TASKS[i]}"
-      echo "XXX"
-    } | whiptail --gauge "Running Security Audit..." 10 70 0
+    # Update progress without using pipe
+    echo $progress > /tmp/progress_bar_pipe
+    whiptail --title "Security Audit" --gauge "Task $((i+1))/$total: ${TASKS[i]}" 10 70 "$(cat /tmp/progress_bar_pipe)"
     
     echo "[$(date)] Starting: $task_message" | tee -a "$LOGFILE"
     
