@@ -8,6 +8,19 @@ if ! command -v whiptail &> /dev/null; then
   exit 1
 fi
 
+# Ensure the script has sudo privileges
+if ! sudo -v; then
+  echo "This script requires sudo privileges. Please run it with a user that has sudo access."
+  exit 1
+fi
+
+# Refresh sudo timestamp periodically to prevent timeout
+while true; do
+  sudo -n true
+  sleep 60
+  kill -0 "$$" || exit
+done 2>/dev/null &
+
 # Check if a graphical environment is available
 #if [ -z "$DISPLAY" ]; then
 # USE_GUI=false
@@ -70,7 +83,12 @@ else
   done
 fi
 
-mkdir -p "$OUTDIR"
+# Check if the user has write permissions for the output directory
+if ! mkdir -p "$OUTDIR" 2>/dev/null; then
+  display_error "Cannot create or write to the directory: $OUTDIR. Please check permissions."
+  exit 1
+fi
+
 SUMMARY="$OUTDIR/summary.txt"
 LOGFILE="$OUTDIR/audit.log"
 exec > >(tee -a "$LOGFILE") 2>&1
@@ -81,10 +99,14 @@ display_info "Starting security audit for $TARGET. Results will be saved in $OUT
 # Default Gobuster wordlist and validation
 DEFAULT_WORDLIST="$HOME/SecLists/Discovery/Web-Content/common.txt"
 if [ ! -f "$DEFAULT_WORDLIST" ]; then
-  display_info "Gobuster wordlist not found. Cloning SecLists repository..."
-  if ! git clone https://github.com/danielmiessler/SecLists.git "$HOME/SecLists"; then
-    display_error "Failed to clone SecLists repository. Please check your network connection and try again."
-    exit 1
+  display_info "Gobuster wordlist not found. Attempting to clone SecLists repository..."
+  if [ -d "$HOME/SecLists" ]; then
+    display_info "SecLists directory already exists. Skipping clone."
+  else
+    if ! git clone https://github.com/danielmiessler/SecLists.git "$HOME/SecLists"; then
+      display_error "Failed to clone SecLists repository. Please check your network connection and try again."
+      exit 1
+    fi
   fi
 fi
 
