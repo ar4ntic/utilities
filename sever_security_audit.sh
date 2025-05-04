@@ -91,9 +91,9 @@ fi
 if [ -f "$DEFAULT_WORDLIST" ]; then
   WORDLIST="$DEFAULT_WORDLIST"
 else
-  WORDLIST=$(whiptail --title "Select Gobuster wordlist" --inputbox "Enter the path to the wordlist:" 10 60 "$HOME/" 3>&1 1>&2 2>&3)
+  WORDLIST=$(prompt_user "Enter the path to the Gobuster wordlist (e.g., /path/to/wordlist.txt):" "")
   if [ -z "$WORDLIST" ] || [ ! -f "$WORDLIST" ]; then
-    display_error "No valid wordlist selected. Exiting."
+    display_error "No valid wordlist provided. Exiting."
     exit 1
   fi
 fi
