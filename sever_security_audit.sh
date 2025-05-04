@@ -159,108 +159,80 @@ declare -a TASKS=(
   "Generating recommendations..."
 )
 
-# Function to run scans with a working progress bar
+# Function to run scans with properly working progress bar
 run_tasks() {
   local total=${#TASKS[@]}
-  local progress_file=$(mktemp)
   
-  # Start the progress bar in the background
-  (
-    while true; do
-      if [ -f "$progress_file" ]; then
-        cat "$progress_file"
-      fi
-      sleep 1
-    done
-  ) | whiptail --gauge "Starting security audit..." 10 70 0 &
-  GAUGE_PID=$!
-  
-  # Function to update the progress bar
-  update_progress() {
-    local pct=$1
-    local msg=$2
-    echo "XXX"
-    echo "$pct"
-    echo "Task: $msg ($pct%)"
-    echo "XXX"
-  }
-  
-  # Run each task
   for i in "${!TASKS[@]}"; do
     local task_message="${TASKS[i]}"
     local progress=$(( (i * 100) / total ))
     
+    # Update the progress bar with current task information
+    {
+      echo $progress
+      echo "XXX"
+      echo "Task $((i+1))/$total: ${TASKS[i]}"
+      echo "XXX"
+    } | whiptail --gauge "Running Security Audit..." 10 70 0
+    
     echo "[$(date)] Starting: $task_message" | tee -a "$LOGFILE"
-    update_progress "$progress" "$task_message" > "$progress_file"
     
     case $i in
       0)
         echo "Running full TCP port scan with Nmap..." | tee -a "$LOGFILE"
-        if ! sudo nmap -sS -Pn -p- "$TARGET" -oN "$OUTDIR/nmap_full.txt" 2>&1 | tee -a "$LOGFILE"; then
-          echo "- Warning: Nmap full TCP port scan had issues." | tee -a "$SUMMARY" "$LOGFILE"
-        fi
-        OPEN_TCP=$(grep -c "open" "$OUTDIR/nmap_full.txt" || echo "0")
+        sudo nmap -sS -Pn -p- "$TARGET" -oN "$OUTDIR/nmap_full.txt" 2>&1 | tee -a "$LOGFILE"
+        OPEN_TCP=$(grep -c "open" "$OUTDIR/nmap_full.txt" 2>/dev/null || echo "0")
         ;;
       1)
         echo "Running service/version scan with Nmap..." | tee -a "$LOGFILE"
-        if ! sudo nmap -sV -sC -p 22,80,443 "$TARGET" -oN "$OUTDIR/nmap_sv.txt" 2>&1 | tee -a "$LOGFILE"; then
-          display_error "Nmap service/version scan failed."
-        fi
+        sudo nmap -sV -sC -p 22,80,443 "$TARGET" -oN "$OUTDIR/nmap_sv.txt" 2>&1 | tee -a "$LOGFILE"
         ;;
       2)
         echo "Running UDP port scan with Nmap..." | tee -a "$LOGFILE"
-        if ! sudo nmap -sU -Pn -p- "$TARGET" -oN "$OUTDIR/nmap_udp.txt" 2>&1 | tee -a "$LOGFILE"; then
-          display_error "Nmap UDP port scan failed."
-        fi
-        OPEN_UDP=$(grep -c "open" "$OUTDIR/nmap_udp.txt" || true)
+        sudo nmap -sU -Pn --top-ports 100 "$TARGET" -oN "$OUTDIR/nmap_udp.txt" 2>&1 | tee -a "$LOGFILE"
+        OPEN_UDP=$(grep -c "open" "$OUTDIR/nmap_udp.txt" 2>/dev/null || echo "0")
         ;;
       3)
         echo "Running web vulnerabilities scan with Nikto..." | tee -a "$LOGFILE"
-        if ! nikto -h "https://$TARGET" -o "$OUTDIR/nikto.txt" 2>&1 | tee -a "$LOGFILE"; then
-          display_error "Nikto web vulnerabilities scan failed."
-        fi
+        nikto -h "https://$TARGET" -o "$OUTDIR/nikto.txt" 2>&1 | tee -a "$LOGFILE"
         ;;
       4)
         echo "Running SSL/TLS configuration scan with SSLScan..." | tee -a "$LOGFILE"
-        if ! sslscan "$TARGET" > "$OUTDIR/sslscan.txt" 2>&1; then
-          echo "- SSL scan failed. Check your target or network connectivity." | tee -a "$SUMMARY" "$LOGFILE"
-        else
-          if grep -q "SSLv3" "$OUTDIR/sslscan.txt"; then
-            echo "- WARNING: SSLv3 is supported. Disable it to prevent vulnerabilities like POODLE." | tee -a "$SUMMARY" "$LOGFILE"
-          fi
+        sslscan "$TARGET" > "$OUTDIR/sslscan.txt" 2>&1
+        if grep -q "SSLv3" "$OUTDIR/sslscan.txt" 2>/dev/null; then
+          echo "- WARNING: SSLv3 is supported. Disable it to prevent vulnerabilities like POODLE." | tee -a "$SUMMARY" "$LOGFILE"
         fi
         ;;
       5)
         echo "Checking security headers with curl..." | tee -a "$LOGFILE"
-        if ! curl -s -D "$OUTDIR/headers.txt" -o /dev/null "https://$TARGET" 2>&1 | tee -a "$LOGFILE"; then
-          display_error "Curl request for security headers failed."
-        fi
+        curl -s -D "$OUTDIR/headers.txt" -o /dev/null "https://$TARGET" 2>&1 | tee -a "$LOGFILE"
         for hdr in Strict-Transport-Security Content-Security-Policy X-Frame-Options X-Content-Type-Options; do
-          if ! grep -q "$hdr" "$OUTDIR/headers.txt"; then
+          if ! grep -q "$hdr" "$OUTDIR/headers.txt" 2>/dev/null; then
             echo "- Missing header: $hdr" | tee -a "$SUMMARY" "$LOGFILE"
           fi
         done
         ;;
       6)
         echo "Running directory brute-force with Gobuster..." | tee -a "$LOGFILE"
-        if ! gobuster dir -u "https://$TARGET" -w "$WORDLIST" -o "$OUTDIR/gobuster.txt" 2>&1 | tee -a "$LOGFILE"; then
-          display_error "Gobuster directory brute-force scan failed."
-        fi
+        gobuster dir -u "https://$TARGET" -w "$WORDLIST" -o "$OUTDIR/gobuster.txt" 2>&1 | tee -a "$LOGFILE"
         ;;
       7)
         echo "Running DNS enumeration with dig..." | tee -a "$LOGFILE"
-        if ! dig +noall +answer "$TARGET" > "$OUTDIR/dns_a.txt" 2>&1 | tee -a "$LOGFILE"; then
-          display_error "DNS enumeration failed."
+        dig +noall +answer "$TARGET" > "$OUTDIR/dns_a.txt" 2>&1
+        dig CAA +noall +answer "$TARGET" >> "$OUTDIR/dns_a.txt" 2>&1
+        dig TXT +noall +answer "$TARGET" >> "$OUTDIR/dns_a.txt" 2>&1
+        if dig +short TXT "$TARGET" 2>/dev/null | grep -q "v=spf1"; then
+          echo "- SPF record found." | tee -a "$SUMMARY" "$LOGFILE" 
+        else
+          echo "- No SPF record found." | tee -a "$SUMMARY" "$LOGFILE"
         fi
-        dig CAA +noall +answer "$TARGET" >> "$OUTDIR/dns_a.txt" 2>&1 | tee -a "$LOGFILE"
-        dig TXT +noall +answer "$TARGET" >> "$OUTDIR/dns_a.txt" 2>&1 | tee -a "$LOGFILE"
-        dig +short TXT "$TARGET" | grep -q "v=spf1" && echo "- SPF record found." | tee -a "$SUMMARY" "$LOGFILE" || echo "- No SPF record found." | tee -a "$SUMMARY" "$LOGFILE"
         ;;
       8)
         echo "Extracting certificate details with OpenSSL..." | tee -a "$LOGFILE"
-        if ! echo | openssl s_client -connect "$TARGET:443" -servername "$TARGET" 2>/dev/null \
-          | openssl x509 -noout -dates -issuer -subject > "$OUTDIR/cert.txt" 2>&1 | tee -a "$LOGFILE"; then
-          display_error "OpenSSL certificate details extraction failed."
+        if echo | openssl s_client -connect "$TARGET:443" -servername "$TARGET" 2>/dev/null | openssl x509 -noout -dates -issuer -subject > "$OUTDIR/cert.txt"; then
+          echo "Certificate details extracted successfully." | tee -a "$LOGFILE"
+        else
+          echo "OpenSSL certificate details extraction failed." | tee -a "$LOGFILE"
         fi
         ;;
       9)
@@ -271,17 +243,18 @@ run_tasks() {
     echo "[$(date)] Completed: $task_message" | tee -a "$LOGFILE"
   done
   
-  # Final progress update
-  update_progress "100" "Audit complete" > "$progress_file"
+  # Show completion in progress bar
+  {
+    echo 100
+    echo "XXX"
+    echo "Audit complete"
+    echo "XXX"
+  } | whiptail --gauge "Running Security Audit..." 10 70 0
   sleep 2
-  
-  # Kill the progress bar
-  kill $GAUGE_PID 2>/dev/null
-  rm "$progress_file" 2>/dev/null
 }
 
-# Run the tasks and pipe to whiptail
-run_tasks | whiptail --gauge "Security Audit Progress" 10 60 0
+# Just call the function directly
+run_tasks
 
 # Improved error checking for summary generation
 {
