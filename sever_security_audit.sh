@@ -159,26 +159,47 @@ declare -a TASKS=(
   "Generating recommendations..."
 )
 
-# Function to run scans and update progress
+# Function to run scans with a working progress bar
 run_tasks() {
   local total=${#TASKS[@]}
-  local progress=0
-
+  local progress_file=$(mktemp)
+  
+  # Start the progress bar in the background
+  (
+    while true; do
+      if [ -f "$progress_file" ]; then
+        cat "$progress_file"
+      fi
+      sleep 1
+    done
+  ) | whiptail --gauge "Starting security audit..." 10 70 0 &
+  GAUGE_PID=$!
+  
+  # Function to update the progress bar
+  update_progress() {
+    local pct=$1
+    local msg=$2
+    echo "XXX"
+    echo "$pct"
+    echo "Task: $msg ($pct%)"
+    echo "XXX"
+  }
+  
+  # Run each task
   for i in "${!TASKS[@]}"; do
-    progress=$(( (i + 1) * 100 / total ))
     local task_message="${TASKS[i]}"
+    local progress=$(( (i * 100) / total ))
+    
     echo "[$(date)] Starting: $task_message" | tee -a "$LOGFILE"
-
-    # Update progress bar and display task message
-    echo "$progress" | whiptail --gauge "Executing: $task_message ($progress%)" 10 60 $progress
-
+    update_progress "$progress" "$task_message" > "$progress_file"
+    
     case $i in
       0)
         echo "Running full TCP port scan with Nmap..." | tee -a "$LOGFILE"
         if ! sudo nmap -sS -Pn -p- "$TARGET" -oN "$OUTDIR/nmap_full.txt" 2>&1 | tee -a "$LOGFILE"; then
-          display_error "Nmap full TCP port scan failed."
+          echo "- Warning: Nmap full TCP port scan had issues." | tee -a "$SUMMARY" "$LOGFILE"
         fi
-        OPEN_TCP=$(grep -c "open" "$OUTDIR/nmap_full.txt" || true)
+        OPEN_TCP=$(grep -c "open" "$OUTDIR/nmap_full.txt" || echo "0")
         ;;
       1)
         echo "Running service/version scan with Nmap..." | tee -a "$LOGFILE"
@@ -246,38 +267,66 @@ run_tasks() {
         echo "Generating recommendations..." | tee -a "$LOGFILE"
         ;;
     esac
-
+    
     echo "[$(date)] Completed: $task_message" | tee -a "$LOGFILE"
   done
+  
+  # Final progress update
+  update_progress "100" "Audit complete" > "$progress_file"
+  sleep 2
+  
+  # Kill the progress bar
+  kill $GAUGE_PID 2>/dev/null
+  rm "$progress_file" 2>/dev/null
 }
 
 # Run the tasks and pipe to whiptail
 run_tasks | whiptail --gauge "Security Audit Progress" 10 60 0
 
-# Write recommendations to summary
+# Improved error checking for summary generation
 {
   echo "Security Audit Summary for $TARGET"
   echo "Generated: $(date)"
   echo
-  echo "Open TCP ports: $OPEN_TCP"
-  if [ "$OPEN_TCP" -gt 3 ]; then
+  echo "Open TCP ports: ${OPEN_TCP:-0}"
+  if [ "${OPEN_TCP:-0}" -gt 3 ]; then
     echo "- WARNING: Consider closing unnecessary TCP ports."
   else
     echo "- TCP port count is within expected range."
   fi
-  grep -q "22/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- SSH (port 22) open: disable root login & enforce key-based auth."
-  grep -q "80/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- HTTP (port 80) open: redirect to HTTPS & enforce HSTS."
-  grep -q "443/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- HTTPS (port 443) open: review weak ciphers in sslscan output."
-  echo
-  gob_count=$(grep -c "Status: 200" "$OUTDIR/gobuster.txt" || true)
-  if [ "$gob_count" -gt 0 ]; then
-    echo "- Found $gob_count accessible dirs/files via Gobuster."
+  
+  if [ -f "$OUTDIR/nmap_full.txt" ]; then
+    grep -q "22/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- SSH (port 22) open: disable root login & enforce key-based auth."
+    grep -q "80/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- HTTP (port 80) open: redirect to HTTPS & enforce HSTS."
+    grep -q "443/tcp.*open" "$OUTDIR/nmap_full.txt" && echo "- HTTPS (port 443) open: review weak ciphers in sslscan output."
   else
-    echo "- No common hidden dirs/files found."
+    echo "- Warning: Nmap scan results not available."
   fi
-  EXPIRY=$(grep -Po "notAfter=\K.*" "$OUTDIR/cert.txt")
-  echo "- Certificate expiration date: $EXPIRY"
-  grep -q "issue" "$OUTDIR/dns_a.txt" && echo "- CAA record present." || echo "- No CAA record found."
+  
+  echo
+  if [ -f "$OUTDIR/gobuster.txt" ]; then
+    gob_count=$(grep -c "Status: 200" "$OUTDIR/gobuster.txt" || echo "0")
+    if [ "$gob_count" -gt 0 ]; then
+      echo "- Found $gob_count accessible dirs/files via Gobuster."
+    else
+      echo "- No common hidden dirs/files found."
+    fi
+  else
+    echo "- Warning: Gobuster results not available."
+  fi
+  
+  if [ -f "$OUTDIR/cert.txt" ]; then
+    EXPIRY=$(grep -Po "notAfter=\K.*" "$OUTDIR/cert.txt" || echo "Not available")
+    echo "- Certificate expiration date: $EXPIRY"
+  else
+    echo "- Certificate information not available."
+  fi
+  
+  if [ -f "$OUTDIR/dns_a.txt" ]; then
+    grep -q "issue" "$OUTDIR/dns_a.txt" && echo "- CAA record present." || echo "- No CAA record found."
+  else
+    echo "- DNS information not available."
+  fi
 } >> "$SUMMARY"
 
 # Display summary
