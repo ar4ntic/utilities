@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # vm_security_audit.sh - GUI-based Automated security audit for a public-exposed VM
-# Uses Zenity for GUI dialogs to prompt the user, install dependencies, run checks, and display results.
+# Uses Zenity for GUI dialogs if available, otherwise falls back to terminal input/output.
 
-# Ensure Zenity is installed
+# Check if Zenity is installed
 if ! command -v zenity &> /dev/null; then
   echo "Zenity is not installed. Attempting to install it now..."
   if command -v apt-get &> /dev/null; then
@@ -19,48 +19,50 @@ if ! command -v zenity &> /dev/null; then
   fi
 fi
 
-# Start the dialog after Zenity is installed
-zenity --info --title="Zenity Installed" --text="Zenity has been successfully installed. Starting the security audit script."
-
-# Exit on error and handle failures gracefully
-set -e
-trap 'zenity --error --title="Error" --text="An unexpected error occurred. Please check logs in the output directory for details."; exit 1' ERR
-
-# Required CLI tools
-REQUIRED=(nmap nikto sslscan gobuster dig openssl curl zenity)
-MISSING=()
-for tool in "${REQUIRED[@]}"; do
-  command -v "$tool" >/dev/null 2>&1 || MISSING+=("$tool")
-done
-
-# If any tools missing, ask via GUI
-if [ ${#MISSING[@]} -gt 0 ]; then
-  TO_INSTALL=$(printf "%s\n" "${MISSING[@]}")
-  zenity --question --title="Missing Tools" --text="The following tools are missing:\n$TO_INSTALL\n\nInstall them now?"
-  if [ $? -eq 0 ]; then
-    if command -v apt-get &> /dev/null; then
-      sudo apt-get update && sudo apt-get install -y "${MISSING[@]}"
-    elif command -v yum &> /dev/null; then
-      sudo yum install -y "${MISSING[@]}"
-    elif command -v dnf &> /dev/null; then
-      sudo dnf install -y "${MISSING[@]}"
-    elif command -v brew &> /dev/null; then
-      brew install "${MISSING[@]}"
-    else
-      zenity --error --title="Package Manager Not Found" --text="No supported package manager found. Please install: $TO_INSTALL manually."
-      exit 1
-    fi
-  else
-    zenity --error --title="Cannot Continue" --text="Required tools missing: $TO_INSTALL. Exiting."
-    exit 1
-  fi
+# Check if a graphical environment is available
+if [ -z "$DISPLAY" ]; then
+  USE_GUI=false
+  echo "No graphical environment detected. Falling back to terminal mode."
+else
+  USE_GUI=true
 fi
 
+# Function to display messages or prompts
+prompt_user() {
+  local message="$1"
+  local default="$2"
+  if $USE_GUI; then
+    zenity --entry --title="Server Security Audit" --text="$message" --entry-text="$default"
+  else
+    read -p "$message [$default]: " input
+    echo "${input:-$default}"
+  fi
+}
+
+# Function to display errors
+display_error() {
+  local message="$1"
+  if $USE_GUI; then
+    zenity --error --title="Error" --text="$message"
+  else
+    echo "ERROR: $message" >&2
+  fi
+}
+
+# Function to display information
+display_info() {
+  local message="$1"
+  if $USE_GUI; then
+    zenity --info --title="Info" --text="$message"
+  else
+    echo "$message"
+  fi
+}
+
 # Prompt for target URL/IP
-TARGET_RAW=$(zenity --entry --title="Server Security Audit" --text="Enter the target URL or IP address:")
-# Validate input: allow only hostname or IPv4/IPv6
+TARGET_RAW=$(prompt_user "Enter the target URL or IP address:" "")
 if [[ ! "$TARGET_RAW" =~ ^(([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}|[0-9]{1,3}(\.[0-9]{1,3}){3}|\[[0-9a-fA-F:]+\])$ ]]; then
-  zenity --error --title="Invalid Input" --text="The entered target '$TARGET_RAW' is not a valid hostname or IP address."
+  display_error "The entered target '$TARGET_RAW' is not a valid hostname or IP address."
   exit 1
 fi
 TARGET="$TARGET_RAW"
@@ -77,6 +79,9 @@ mkdir -p "$OUTDIR"
 SUMMARY="$OUTDIR/summary.txt"
 LOGFILE="$OUTDIR/audit.log"
 exec > >(tee -a "$LOGFILE") 2>&1
+
+# Display information about the audit
+display_info "Starting security audit for $TARGET. Results will be saved in $OUTDIR."
 
 # Default Gobuster wordlist and validation
 DEFAULT_WORDLIST="/usr/share/wordlists/dirb/common.txt"
