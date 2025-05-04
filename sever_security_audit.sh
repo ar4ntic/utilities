@@ -2,6 +2,23 @@
 # vm_security_audit.sh - GUI-based Automated security audit for a public-exposed VM
 # Uses Zenity for GUI dialogs to prompt the user, install dependencies, run checks, and display results.
 
+# Ensure Zenity is installed
+if ! command -v zenity &> /dev/null; then
+  echo "Zenity is not installed. Attempting to install it now..."
+  if command -v apt-get &> /dev/null; then
+    sudo apt-get update && sudo apt-get install -y zenity
+  elif command -v yum &> /dev/null; then
+    sudo yum install -y zenity
+  elif command -v dnf &> /dev/null; then
+    sudo dnf install -y zenity
+  elif command -v brew &> /dev/null; then
+    brew install zenity
+  else
+    echo "No supported package manager found. Please install Zenity manually and re-run the script."
+    exit 1
+  fi
+fi
+
 # Exit on error and handle failures gracefully
 set -e
 trap 'zenity --error --title="Error" --text="An unexpected error occurred. Please check logs in the output directory for details."; exit 1' ERR
