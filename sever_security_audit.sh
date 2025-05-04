@@ -21,14 +21,6 @@ while true; do
   kill -0 "$$" || exit
 done 2>/dev/null &
 
-# Check if a graphical environment is available
-if [ -z "$DISPLAY" ]; then
-  USE_GUI=false
-  echo "No graphical environment detected. Falling back to terminal mode."
-else
-  USE_GUI=true
-fi
-
 # Function to display messages or prompts
 prompt_user() {
   local message="$1"
