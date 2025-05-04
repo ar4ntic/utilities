@@ -1,22 +1,11 @@
 #!/usr/bin/env bash
 # vm_security_audit.sh - GUI-based Automated security audit for a public-exposed VM
-# Uses Zenity for GUI dialogs if available, otherwise falls back to terminal input/output.
+# Uses Whiptail for GUI dialogs if available, otherwise falls back to terminal input/output.
 
-# Check if Zenity is installed
-if ! command -v zenity &> /dev/null; then
-  echo "Zenity is not installed. Attempting to install it now..."
-  if command -v apt-get &> /dev/null; then
-    sudo apt-get update && sudo apt-get install -y zenity
-  elif command -v yum &> /dev/null; then
-    sudo yum install -y zenity
-  elif command -v dnf &> /dev/null; then
-    sudo dnf install -y zenity
-  elif command -v brew &> /dev/null; then
-    brew install zenity
-  else
-    echo "No supported package manager found. Please install Zenity manually and re-run the script."
-    exit 1
-  fi
+# Check if Whiptail is installed
+if ! command -v whiptail &> /dev/null; then
+  echo "Whiptail is not installed. Please install it and re-run the script."
+  exit 1
 fi
 
 # Check if a graphical environment is available
@@ -32,7 +21,7 @@ prompt_user() {
   local message="$1"
   local default="$2"
   if $USE_GUI; then
-    zenity --entry --title="Server Security Audit" --text="$message" --entry-text="$default"
+    whiptail --inputbox "$message" 10 60 "$default" 3>&1 1>&2 2>&3
   else
     read -p "$message [$default]: " input
     echo "${input:-$default}"
@@ -43,7 +32,7 @@ prompt_user() {
 display_error() {
   local message="$1"
   if $USE_GUI; then
-    zenity --error --title="Error" --text="$message"
+    whiptail --msgbox "ERROR: $message" 10 60
   else
     echo "ERROR: $message" >&2
   fi
@@ -53,7 +42,7 @@ display_error() {
 display_info() {
   local message="$1"
   if $USE_GUI; then
-    zenity --info --title="Info" --text="$message"
+    whiptail --msgbox "$message" 10 60
   else
     echo "$message"
   fi
@@ -88,9 +77,9 @@ DEFAULT_WORDLIST="/usr/share/wordlists/dirb/common.txt"
 if [ -f "$DEFAULT_WORDLIST" ]; then
   WORDLIST="$DEFAULT_WORDLIST"
 else
-  WORDLIST=$(zenity --file-selection --title="Select Gobuster wordlist" --file-filter="*.txt" --filename="$HOME/")
+  WORDLIST=$(whiptail --title "Select Gobuster wordlist" --inputbox "Enter the path to the wordlist:" 10 60 "$HOME/" 3>&1 1>&2 2>&3)
   if [ -z "$WORDLIST" ] || [ ! -f "$WORDLIST" ]; then
-    zenity --error --title="Wordlist Missing" --text="No valid wordlist selected. Exiting."
+    display_error "No valid wordlist selected. Exiting."
     exit 1
   fi
 fi
@@ -170,9 +159,8 @@ run_tasks() {
   done
 }
 
-# Run the tasks and pipe to zenity
-run_tasks | zenity --progress --title="Security Audit" --auto-close --percentage=0 --auto-kill \
-  --width=500 --height=100 --text="Initializing..."
+# Run the tasks and pipe to whiptail
+run_tasks | whiptail --gauge "Security Audit Progress" 10 60 0
 
 # Write recommendations to summary
 {
@@ -201,4 +189,4 @@ run_tasks | zenity --progress --title="Security Audit" --auto-close --percentage
 } >> "$SUMMARY"
 
 # Display summary
-zenity --text-info --title="Audit Summary" --filename="$SUMMARY" --width=600 --height=400
+whiptail --textbox "$SUMMARY" 20 70
