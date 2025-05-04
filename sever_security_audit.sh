@@ -56,14 +56,20 @@ if [[ ! "$TARGET_RAW" =~ ^(([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}|[0-9]{1,3}(\.[0-9]{1,3
 fi
 TARGET="$TARGET_RAW"
 
-# Prepare sanitized output directory name
-SAFE_TARGET=$(echo "$TARGET" | sed 's/[^a-zA-Z0-9]/_/g')
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTDIR="audit_${SAFE_TARGET}_$TIMESTAMP"
-while [ -d "$OUTDIR" ]; do
+# Prompt for custom results directory
+CUSTOM_OUTDIR=$(prompt_user "Enter a custom directory to save results (leave blank for default):" "")
+if [ -n "$CUSTOM_OUTDIR" ]; then
+  OUTDIR="$CUSTOM_OUTDIR"
+else
+  SAFE_TARGET=$(echo "$TARGET" | sed 's/[^a-zA-Z0-9]/_/g')
   TIMESTAMP=$(date +%Y%m%d_%H%M%S)
   OUTDIR="audit_${SAFE_TARGET}_$TIMESTAMP"
-done
+  while [ -d "$OUTDIR" ]; do
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    OUTDIR="audit_${SAFE_TARGET}_$TIMESTAMP"
+  done
+fi
+
 mkdir -p "$OUTDIR"
 SUMMARY="$OUTDIR/summary.txt"
 LOGFILE="$OUTDIR/audit.log"
@@ -198,3 +204,8 @@ run_tasks | whiptail --gauge "Security Audit Progress" 10 60 0
 
 # Display summary
 whiptail --textbox "$SUMMARY" 20 70
+
+# Display the full path of the results
+RESULTS_DIR_FULL_PATH="$(realpath "$OUTDIR")"
+SUMMARY_FILE_FULL_PATH="$(realpath "$SUMMARY")"
+display_info "Audit completed. Results saved in:\nDirectory: $RESULTS_DIR_FULL_PATH\nSummary File: $SUMMARY_FILE_FULL_PATH"
