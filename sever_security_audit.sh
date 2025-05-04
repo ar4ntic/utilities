@@ -19,6 +19,9 @@ if ! command -v zenity &> /dev/null; then
   fi
 fi
 
+# Start the dialog after Zenity is installed
+zenity --info --title="Zenity Installed" --text="Zenity has been successfully installed. Starting the security audit script."
+
 # Exit on error and handle failures gracefully
 set -e
 trap 'zenity --error --title="Error" --text="An unexpected error occurred. Please check logs in the output directory for details."; exit 1' ERR
