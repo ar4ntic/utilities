@@ -169,34 +169,38 @@ run_tasks() {
     local task_message="${TASKS[i]}"
     echo "[$(date)] Starting: $task_message" | tee -a "$LOGFILE"
 
-    # Update progress bar
-    short_message=$(echo "$task_message" | cut -c1-50) # Truncate long messages
-    echo "$progress" | whiptail --gauge "Progress: $short_message" 10 60 $progress
+    # Update progress bar and display task message
+    echo "$progress" | whiptail --gauge "Executing: $task_message ($progress%)" 10 60 $progress
 
     case $i in
       0)
+        echo "Running full TCP port scan with Nmap..." | tee -a "$LOGFILE"
         if ! sudo nmap -sS -Pn -p- "$TARGET" -oN "$OUTDIR/nmap_full.txt" 2>&1 | tee -a "$LOGFILE"; then
           display_error "Nmap full TCP port scan failed."
         fi
         OPEN_TCP=$(grep -c "open" "$OUTDIR/nmap_full.txt" || true)
         ;;
       1)
+        echo "Running service/version scan with Nmap..." | tee -a "$LOGFILE"
         if ! sudo nmap -sV -sC -p 22,80,443 "$TARGET" -oN "$OUTDIR/nmap_sv.txt" 2>&1 | tee -a "$LOGFILE"; then
           display_error "Nmap service/version scan failed."
         fi
         ;;
       2)
+        echo "Running UDP port scan with Nmap..." | tee -a "$LOGFILE"
         if ! sudo nmap -sU -Pn -p- "$TARGET" -oN "$OUTDIR/nmap_udp.txt" 2>&1 | tee -a "$LOGFILE"; then
           display_error "Nmap UDP port scan failed."
         fi
         OPEN_UDP=$(grep -c "open" "$OUTDIR/nmap_udp.txt" || true)
         ;;
       3)
+        echo "Running web vulnerabilities scan with Nikto..." | tee -a "$LOGFILE"
         if ! nikto -h "https://$TARGET" -o "$OUTDIR/nikto.txt" 2>&1 | tee -a "$LOGFILE"; then
           display_error "Nikto web vulnerabilities scan failed."
         fi
         ;;
       4)
+        echo "Running SSL/TLS configuration scan with SSLScan..." | tee -a "$LOGFILE"
         if ! sslscan "$TARGET" > "$OUTDIR/sslscan.txt" 2>&1; then
           echo "- SSL scan failed. Check your target or network connectivity." | tee -a "$SUMMARY" "$LOGFILE"
         else
@@ -206,6 +210,7 @@ run_tasks() {
         fi
         ;;
       5)
+        echo "Checking security headers with curl..." | tee -a "$LOGFILE"
         if ! curl -s -D "$OUTDIR/headers.txt" -o /dev/null "https://$TARGET" 2>&1 | tee -a "$LOGFILE"; then
           display_error "Curl request for security headers failed."
         fi
@@ -216,11 +221,13 @@ run_tasks() {
         done
         ;;
       6)
+        echo "Running directory brute-force with Gobuster..." | tee -a "$LOGFILE"
         if ! gobuster dir -u "https://$TARGET" -w "$WORDLIST" -o "$OUTDIR/gobuster.txt" 2>&1 | tee -a "$LOGFILE"; then
           display_error "Gobuster directory brute-force scan failed."
         fi
         ;;
       7)
+        echo "Running DNS enumeration with dig..." | tee -a "$LOGFILE"
         if ! dig +noall +answer "$TARGET" > "$OUTDIR/dns_a.txt" 2>&1 | tee -a "$LOGFILE"; then
           display_error "DNS enumeration failed."
         fi
@@ -229,6 +236,7 @@ run_tasks() {
         dig +short TXT "$TARGET" | grep -q "v=spf1" && echo "- SPF record found." | tee -a "$SUMMARY" "$LOGFILE" || echo "- No SPF record found." | tee -a "$SUMMARY" "$LOGFILE"
         ;;
       8)
+        echo "Extracting certificate details with OpenSSL..." | tee -a "$LOGFILE"
         if ! echo | openssl s_client -connect "$TARGET:443" -servername "$TARGET" 2>/dev/null \
           | openssl x509 -noout -dates -issuer -subject > "$OUTDIR/cert.txt" 2>&1 | tee -a "$LOGFILE"; then
           display_error "OpenSSL certificate details extraction failed."
