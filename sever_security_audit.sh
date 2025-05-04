@@ -1,11 +1,26 @@
 #!/usr/bin/env bash
 # vm_security_audit.sh - GUI-based Automated security audit for a public-exposed VM
-# Uses Whiptail for GUI dialogs if available, otherwise falls back to terminal input/output.
+# Uses Whiptail for GUI dialogs.
 
-# Check if Whiptail is installed
+# Check if Whiptail is installed and install it if necessary (CLI only)
 if ! command -v whiptail &> /dev/null; then
-  echo "Whiptail is not installed. Please install it and re-run the script."
-  exit 1
+  echo "Whiptail is not installed. Attempting to install it..."
+  if command -v apt &> /dev/null; then
+    sudo apt update && sudo apt install -y whiptail
+  elif command -v yum &> /dev/null; then
+    sudo yum install -y newt
+  elif command -v dnf &> /dev/null; then
+    sudo dnf install -y newt
+  else
+    echo "Unsupported package manager. Please install Whiptail manually and re-run the script."
+    exit 1
+  fi
+
+  # Verify installation
+  if ! command -v whiptail &> /dev/null; then
+    echo "Failed to install Whiptail. Please install it manually and re-run the script."
+    exit 1
+  fi
 fi
 
 # Ensure the script has sudo privileges
@@ -25,32 +40,19 @@ done 2>/dev/null &
 prompt_user() {
   local message="$1"
   local default="$2"
-  if $USE_GUI; then
-    whiptail --inputbox "$message" 10 60 "$default" 3>&1 1>&2 2>&3
-  else
-    read -p "$message [$default]: " input
-    echo "${input:-$default}"
-  fi
+  whiptail --inputbox "$message" 10 60 "$default" 3>&1 1>&2 2>&3
 }
 
 # Function to display errors
 display_error() {
   local message="$1"
-  if $USE_GUI; then
-    whiptail --msgbox "ERROR: $message" 10 60
-  else
-    echo "ERROR: $message" >&2
-  fi
+  whiptail --msgbox "ERROR: $message" 10 60
 }
 
 # Function to display information
 display_info() {
   local message="$1"
-  if $USE_GUI; then
-    whiptail --msgbox "$message" 10 60
-  else
-    echo "$message"
-  fi
+  whiptail --msgbox "$message" 10 60
 }
 
 # Prompt for target URL/IP
